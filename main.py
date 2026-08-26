@@ -63,7 +63,7 @@ SLIDE_CONTENT:
 
     try:
         # Rasmiy va ishlaydigan model
-        model = genai.GenerativeModel('gemini-3.6-flash')
+        model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content(prompt)
         raw_text = response.text
 

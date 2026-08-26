@@ -1,66 +1,163 @@
-import asyncio
 import os
-from aiogram import Bot, Dispatcher
-from aiogram.types import Message
+import asyncio
+import io
+import urllib.parse
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
+from aiogram.types import BufferedInputFile
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from google import genai
-from aiohttp import web
+import aiohttp
 
-# API Kalitlar
-BOT_TOKEN = "8408520484:AAEqOi_Ymkh5g524-TVHdGv7yTLAG4Ja_Y4" 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6Iu6riqs8tEMVX_qo83q8CcYRaNLrCNliWfF9tz4fD3mg")
+# --- TOKENS AND API KEYS ---
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-@dp.message(CommandStart())
-async def start_handler(message: Message):
-    await message.answer("Salom! Menga slayd mavzusini yuboring, men sizga tayyor prezentatsiya faylini tayyorlab beraman.")
-
-@dp.message()
-async def generate_slide(message: Message):
-    await message.answer("Slayd tayyorlanmoqda, iltimos kuting...")
+# --- HELPER: UN SPLASH OR PLACEHOLDER IMAGE DOWNLOADER ---
+async def fetch_image_bytes(query: str) -> bytes:
+    """Mavzuga mos rasm qidirib yuklab beradi"""
+    encoded_query = urllib.parse.quote(query)
+    # Unsplash manbasidan mavzuga mos rasm olinadi
+    url = f"https://source.unsplash.com/800x600/?{encoded_query}"
+    
     try:
-        prompt = f"'{message.text}' mavzusida 5 ta slayd uchun qisqa va mazmunli matn tayyorlab ber."
-        response = ai_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt
-        )
-        
-        prs = Presentation()
-        blank_slide_layout = prs.slide_layouts[6]
-        slide = prs.slides.add_slide(blank_slide_layout)
-        
-        txBox = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(5))
-        tf = txBox.text_frame
-        tf.text = response.text
-        
-        file_path = "taqdimot.pptx"
-        prs.save(file_path)
-        
-        from aiogram.types import FSInputFile
-        doc = FSInputFile(file_path)
-        await message.answer_document(doc, caption="Taqdimotingiz tayyor!")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as resp:
+                if resp.status == 200:
+                    return await resp.read()
     except Exception as e:
-        await message.answer(f"Xatolik yuz berdi: {e}")
+        print(f"Rasm yuklashda xatolik: {e}")
+    
+    # Agar rasm topilmasa zaxira rasm
+    fallback_url = "https://picsum.photos/800/600"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(fallback_url, timeout=10) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+    except Exception:
+        pass
+    return None
 
-# Render portini aldash uchun veb-server
-async def handle(request):
-    return web.Response(text="Bot ishlayapti!")
+# --- BOT HANDLERS ---
+@dp.message(CommandStart())
+async def start_cmd(message: types.Message):
+    await message.answer(
+        "Salom! Men taqdimot tayyorlab beruvchi botman.\n\n"
+        "Menga taqdimot mavzusini yuboring, men har bir slaydda **rasmlar va chiroyli dizayn** bilan `.pptx` fayl tayyorlab beraman!"
+    )
+
+@dp.message(F.text)
+async def generate_presentation(message: types.Message):
+    topic = message.text.strip()
+    status_msg = await message.answer("⏳ Taqdimot va rasmlar tayyorlanmoqda, iltimos kuting...")
+
+    prompt = f"""
+Siz professional taqdimot dizaynerisiz.
+Mavzu: "{topic}"
+
+Menga 15 ta slayddan iborat taqdimot matnini yarating. 
+Har bir slayd uchun aniq quyidagi formatda javob bering:
+
+SLIDE_TITLE: Slayd sarlavhasi
+IMAGE_SEARCH: Rasm qidirish uchun inglizcha kalit so'z (masalan: artificial intelligence, business meeting, nature va h.k.)
+SLIDE_CONTENT: 
+- Birinchi muhim punkt
+- Ikkinchi muhim punkt
+- Uchinchi muhim punkt
+---
+"""
+
+    try:
+        # Gemini 3.6 Flash modeli orqali matn va rasm kalit so'zlarini olish
+        response = ai_client.models.generate_content(
+            model="gemini-3.6-flash",
+            contents=prompt,
+        )
+        raw_text = response.text
+
+        prs = Presentation()
+        # Slayd o'lchamini 16:9 (keng) qilish
+        prs.slide_width = Inches(13.33)
+        prs.slide_height = Inches(7.5)
+
+        blank_layout = prs.slide_layouts[6]
+        slides_data = raw_text.split("---")
+
+        for slide_text in slides_data:
+            if not slide_text.strip():
+                continue
+
+            lines = slide_text.strip().split("\n")
+            title = "Taqdimot"
+            img_keyword = topic
+            content_lines = []
+
+            for line in lines:
+                if line.startswith("SLIDE_TITLE:"):
+                    title = line.replace("SLIDE_TITLE:", "").strip()
+                elif line.startswith("IMAGE_SEARCH:"):
+                    img_keyword = line.replace("IMAGE_SEARCH:", "").strip()
+                elif line.startswith("SLIDE_CONTENT:"):
+                    continue
+                elif line.strip():
+                    content_lines.append(line.strip())
+
+            slide = prs.slides.add_slide(blank_layout)
+
+            # 1. Sarlavha qo'shish
+            title_box = slide.shapes.add_textbox(Inches(0.8), Inches(0.6), Inches(11.7), Inches(1.0))
+            tf = title_box.text_frame
+            tf.word_wrap = True
+            p = tf.paragraphs[0]
+            p.text = title
+            p.font.size = Pt(32)
+            p.font.bold = True
+            p.font.color.rgb = RGBColor(24, 43, 73)
+
+            # 2. Matn qismini chap tomonga qo'shish
+            content_box = slide.shapes.add_textbox(Inches(0.8), Inches(1.8), Inches(6.5), Inches(5.0))
+            ctf = content_box.text_frame
+            ctf.word_wrap = True
+            
+            for idx, text_line in enumerate(content_lines):
+                cp = ctf.add_paragraph() if idx > 0 else ctf.paragraphs[0]
+                cp.text = text_line
+                cp.font.size = Pt(18)
+                cp.font.color.rgb = RGBColor(50, 50, 50)
+                cp.space_after = Pt(12)
+
+            # 3. Rasmni o'ng tomonga joylashtirish
+            img_bytes = await fetch_image_bytes(img_keyword)
+            if img_bytes:
+                image_stream = io.BytesIO(img_bytes)
+                slide.shapes.add_picture(
+                    image_stream, 
+                    left=Inches(7.8), 
+                    top=Inches(1.8), 
+                    width=Inches(4.7), 
+                    height=Inches(4.5)
+                )
+
+        # Faylni xotirada saqlash
+        pptx_io = io.BytesIO()
+        prs.save(pptx_io)
+        pptx_io.seek(0)
+
+        input_file = BufferedInputFile(pptx_io.read(), filename=f"{topic}.pptx")
+        await message.answer_document(input_file, caption=f"✨ **{topic}** bo'yicha rasmli taqdimotingiz tayyor!")
+        await status_msg.delete()
+
+    except Exception as e:
+        await status_msg.edit_text(f"Xatolik yuz berdi: {e}")
 
 async def main():
-    app = web.Application()
-    app.router.add_get("/", handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 10000))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

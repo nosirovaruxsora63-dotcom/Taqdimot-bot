@@ -75,9 +75,9 @@ SLIDE_CONTENT:
 """
 
     try:
-        # Gemini 3.6 Flash modeli orqali matn va rasm kalit so'zlarini olish
+        # Gemini 1.5 Flash modeli orqali matn va rasm kalit so'zlarini olish
         response = ai_client.models.generate_content(
-            model="gemini-3.6-flash",
+            model="gemini-1.5-flash",
             contents=prompt,
         )
         raw_text = response.text

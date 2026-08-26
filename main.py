@@ -8,7 +8,7 @@ from aiogram.types import BufferedInputFile
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
-from google import genai
+import google.generativeai as genai
 import aiohttp
 
 # --- TOKENS AND API KEYS ---
@@ -17,46 +17,33 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# --- HELPER: UN SPLASH OR PLACEHOLDER IMAGE DOWNLOADER ---
+# Gemini sozlamasi
+genai.configure(api_key=GEMINI_API_KEY)
+
 async def fetch_image_bytes(query: str) -> bytes:
-    """Mavzuga mos rasm qidirib yuklab beradi"""
     encoded_query = urllib.parse.quote(query)
-    # Unsplash manbasidan mavzuga mos rasm olinadi
-    url = f"https://source.unsplash.com/800x600/?{encoded_query}"
-    
+    url = f"https://picsum.photos/800/600"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=10) as resp:
-                if resp.status == 200:
-                    return await resp.read()
-    except Exception as e:
-        print(f"Rasm yuklashda xatolik: {e}")
-    
-    # Agar rasm topilmasa zaxira rasm
-    fallback_url = "https://picsum.photos/800/600"
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(fallback_url, timeout=10) as resp:
                 if resp.status == 200:
                     return await resp.read()
     except Exception:
         pass
     return None
 
-# --- BOT HANDLERS ---
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
     await message.answer(
         "Salom! Men taqdimot tayyorlab beruvchi botman.\n\n"
-        "Menga taqdimot mavzusini yuboring, men har bir slaydda **rasmlar va chiroyli dizayn** bilan `.pptx` fayl tayyorlab beraman!"
+        "Menga taqdimot mavzusini yuboring, men 15 ta slayddan iborat rasmli taqdimot tayyorlab beraman!"
     )
 
 @dp.message(F.text)
 async def generate_presentation(message: types.Message):
     topic = message.text.strip()
-    status_msg = await message.answer("⏳ Taqdimot va rasmlar tayyorlanmoqda, iltimos kuting...")
+    status_msg = await message.answer("⏳ Taqdimot tayyorlanmoqda, iltimos kuting...")
 
     prompt = f"""
 Siz professional taqdimot dizaynerisiz.
@@ -66,7 +53,7 @@ Menga 15 ta slayddan iborat taqdimot matnini yarating.
 Har bir slayd uchun aniq quyidagi formatda javob bering:
 
 SLIDE_TITLE: Slayd sarlavhasi
-IMAGE_SEARCH: Rasm qidirish uchun inglizcha kalit so'z (masalan: artificial intelligence, business meeting, nature va h.k.)
+IMAGE_SEARCH: Rasm qidirish uchun kalit so'z
 SLIDE_CONTENT: 
 - Birinchi muhim punkt
 - Ikkinchi muhim punkt
@@ -75,15 +62,12 @@ SLIDE_CONTENT:
 """
 
     try:
-        # Gemini 1.5 Flash modeli orqali matn va rasm kalit so'zlarini olish
-        response = ai_client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=prompt,
-        )
+        # Rasmiy va ishlaydigan model
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(prompt)
         raw_text = response.text
 
         prs = Presentation()
-        # Slayd o'lchamini 16:9 (keng) qilish
         prs.slide_width = Inches(13.33)
         prs.slide_height = Inches(7.5)
 
@@ -111,17 +95,17 @@ SLIDE_CONTENT:
 
             slide = prs.slides.add_slide(blank_layout)
 
-            # 1. Sarlavha qo'shish
+            # Sarlavha
             title_box = slide.shapes.add_textbox(Inches(0.8), Inches(0.6), Inches(11.7), Inches(1.0))
             tf = title_box.text_frame
             tf.word_wrap = True
             p = tf.paragraphs[0]
             p.text = title
-            p.font.size = Pt(32)
+            p.font.size = Pt(28)
             p.font.bold = True
             p.font.color.rgb = RGBColor(24, 43, 73)
 
-            # 2. Matn qismini chap tomonga qo'shish
+            # Matn
             content_box = slide.shapes.add_textbox(Inches(0.8), Inches(1.8), Inches(6.5), Inches(5.0))
             ctf = content_box.text_frame
             ctf.word_wrap = True
@@ -129,11 +113,11 @@ SLIDE_CONTENT:
             for idx, text_line in enumerate(content_lines):
                 cp = ctf.add_paragraph() if idx > 0 else ctf.paragraphs[0]
                 cp.text = text_line
-                cp.font.size = Pt(18)
+                cp.font.size = Pt(16)
                 cp.font.color.rgb = RGBColor(50, 50, 50)
-                cp.space_after = Pt(12)
+                cp.space_after = Pt(10)
 
-            # 3. Rasmni o'ng tomonga joylashtirish
+            # Rasm
             img_bytes = await fetch_image_bytes(img_keyword)
             if img_bytes:
                 image_stream = io.BytesIO(img_bytes)
@@ -145,13 +129,12 @@ SLIDE_CONTENT:
                     height=Inches(4.5)
                 )
 
-        # Faylni xotirada saqlash
         pptx_io = io.BytesIO()
         prs.save(pptx_io)
         pptx_io.seek(0)
 
         input_file = BufferedInputFile(pptx_io.read(), filename=f"{topic}.pptx")
-        await message.answer_document(input_file, caption=f"✨ **{topic}** bo'yicha rasmli taqdimotingiz tayyor!")
+        await message.answer_document(input_file, caption=f"✨ **{topic}** bo'yicha taqdimotingiz tayyor!")
         await status_msg.delete()
 
     except Exception as e:

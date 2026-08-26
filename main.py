@@ -60,12 +60,18 @@ SLIDE_CONTENT:
 - Uchinchi muhim punkt
 ---
 """
-
     try:
-        # Rasmiy va ishlaydigan model
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         response = model.generate_content(prompt)
-        raw_text = response.text
+    except Exception:
+        # Agar 404 bersa, avtomatik zaxira modelga o'tadi
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        response = model.generate_content(prompt)
+
+    raw_text = response.text
+
+
+    
 
         prs = Presentation()
         prs.slide_width = Inches(13.33)

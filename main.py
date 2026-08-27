@@ -26,7 +26,7 @@ bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Modellarni belgilash (Asosiy va Zaxira modellar)
-PRIMARY_MODEL = "gemini-1.5-flash"
+PRIMARY_MODEL = "gemini-3.5-flash"
 
 SYSTEM_PROMPT = """
 Siz professional prezentatsiya yaratuvchi AI assistentsiz. Foydalanuvchi taqdim etgan mavzu bo'yicha aynan 15 ta slayddan iborat structured JSON formatida ma'lumot qaytarishingiz kerak.

@@ -26,7 +26,7 @@ bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Modellarni belgilash (Asosiy va Zaxira modellar)
-PRIMARY_MODEL = "gemini-3.5-flash"
+PRIMARY_MODEL = "gemini-3.6-flash"
 
 SYSTEM_PROMPT = """
 Siz professional prezentatsiya yaratuvchi AI assistentsiz. Foydalanuvchi taqdim etgan mavzu bo'yicha aynan 15 ta slayddan iborat structured JSON formatida ma'lumot qaytarishingiz kerak.
@@ -53,7 +53,7 @@ Qoidalar:
 
 def generate_ai_content(prompt):
     """Gemini API orqali javob olish va 404 xatolarining oldini olish"""
-    models_to_try = [PRIMARY_MODEL, "gemini-1.5-flash", "gemini-2.0-flash-exp"]
+    models_to_try = [PRIMARY_MODEL, "gemini-1.5-flash", "gemini-2.0-flash-exp", "gemini-3.6-flash", "gemini-3.1-flash"]
     
     for model_name in models_to_try:
         try:

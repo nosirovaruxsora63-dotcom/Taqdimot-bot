@@ -2,31 +2,32 @@ import os
 import io
 import json
 import logging
-import requests
-import telebot
+import aiohttp
+import asyncio
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import BufferedInputFile
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
-import google.generativeai as genai
+from google import genai
 
-# Logging sozlanishi
+# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Environment o'zgaruvchilarini olish
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
-    raise ValueError("TELEGRAM_BOT_TOKEN va GEMINI_API_KEY atrof-muhit o'zgaruvchilarida sozlanishi shart!")
+    raise ValueError("TELEGRAM_BOT_TOKEN va GEMINI_API_KEY sozlanmagan!")
 
-# API larni ishga tushirish
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-genai.configure(api_key=GEMINI_API_KEY)
+bot = Bot(token=TELEGRAM_BOT_TOKEN)
+dp = Dispatcher()
 
-# Modellarni belgilash (Asosiy va Zaxira modellar)
-PRIMARY_MODEL = "gemini-3.6-flash"
+# Yangi rasmiy SDK mijozini yaratish
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 SYSTEM_PROMPT = """
 Siz professional prezentatsiya yaratuvchi AI assistentsiz. Foydalanuvchi taqdim etgan mavzu bo'yicha aynan 15 ta slayddan iborat structured JSON formatida ma'lumot qaytarishingiz kerak.
@@ -39,76 +40,82 @@ Qaytariladigan JSON strukturasi quyidagicha bo'lishi shart:
       "slide_number": 1,
       "title": "Slayd sarlavhasi",
       "content": ["Asosiy nuqta 1", "Asosiy nuqta 2", "Asosiy nuqta 3"],
-      "image_keyword": "Aynan shu slaydga mos inglizcha bitta-ikkita qidiruv kalit so'zi (masalan: artificial intelligence, modern architecture, space rocket)"
+      "image_keyword": "Aynan shu slaydga mos inglizcha bitta kalit so'z (masalan: medicine, heart, surgery)"
     }
   ]
 }
 
 Qoidalar:
 1. `slides` massivida aynan 15 ta element bo'lishi shart!
-2. Har bir slayd mazmuni boy va tushunarli bo'lishi kerak.
-3. Birinchi slayd kirish/sarlavha slaydi, oxirgi 15-slayd esa xulosa slaydi bo'lsin.
-4. `image_keyword` aniq va vizual tasvirlanadigan inglizcha so'z bo'lishi shart.
+2. Birinchi slayd kirish, 15-slayd xulosa bo'lsin.
+3. Javob faqat va faqat to'g'ri JSON formatida bo'lsin.
 """
 
-def generate_ai_content(prompt):
-    """Gemini API orqali javob olish va 404 xatolarining oldini olish"""
-    models_to_try = [PRIMARY_MODEL, "gemini-1.5-flash", "gemini-2.0-flash-exp", "gemini-3.6-flash", "gemini-3.1-flash"]
+async def generate_ai_content(prompt):
+    """Google'ning eng yangi va barqaror modellari orqali xatosiz ma'lumot olish"""
+    # Yangi SDK uchun rasmiy va ishlaydigan model nomlari
+    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
     
     for model_name in models_to_try:
         try:
             logger.info(f"Model sinab ko'rilmoqda: {model_name}")
-            model = genai.GenerativeModel(
-                model_name=model_name,
-                generation_config={"response_mime_type": "application/json"}
-            )
-            response = model.generate_content([SYSTEM_PROMPT, prompt])
-            return response.text
-        except Exception as e:
-            logger.warning(f"{model_name} modelida xatolik bo'ldi (404/Not Found bo'lishi mumkin): {e}")
-            continue
             
-    raise RuntimeError("Barcha Gemini modellari so'rovni bajarishda xatolik berdi.")
+            # Asinxron chaqiruv
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model=model_name,
+                contents=f"{SYSTEM_PROMPT}\n\nMavzu: {prompt}",
+            )
+            
+            if response.text:
+                # JSON matnidan ortiqcha ```json belgilarini tozalaymiz
+                text = response.text.strip()
+                if text.startswith("```json"):
+                    text = text[7:]
+                if text.startswith("```"):
+                    text = text[3:]
+                if text.endswith("```"):
+                    text = text[:-3]
+                return text.strip()
+        except Exception as e:
+            logger.warning(f"{model_name} modelida xato: {e}")
+            continue
 
-def fetch_image(keyword):
-    """Unsplash API orqali mavzuga mos rasm yuklab olish"""
+    raise RuntimeError("404 yoki boshqa API xatolar tufayli biror model ishlamadi. API Kalitni tekshiring.")
+
+async def fetch_image(keyword):
+    """Rasm yuklab olish"""
+    url = f"https://picsum.photos/800/600"
     try:
-        url = f"https://source.unsplash.com/800x600/?{requests.utils.quote(keyword)}"
-        res = requests.get(url, timeout=10)
-        if res.status_code == 200:
-            return io.BytesIO(res.content)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    return io.BytesIO(data)
     except Exception as e:
-        logger.error(f"Rasm yuklashda xatolik ({keyword}): {e}")
-    
-    try:
-        fallback_res = requests.get("https://picsum.photos/800/600", timeout=10)
-        if fallback_res.status_code == 200:
-            return io.BytesIO(fallback_res.content)
-    except Exception:
-        return None
+        logger.error(f"Rasm yuklashda xato: {e}")
+    return None
 
-def build_powerpoint(data):
-    """JSON ma'lumotlaridan slaydlardan iborat .pptx yaratish"""
+async def build_powerpoint(data):
+    """PowerPoint (.pptx) faylini yaratish"""
     prs = Presentation()
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
-
     blank_layout = prs.slide_layouts[6]
+
     slides_data = data.get("slides", [])
     total_slides = len(slides_data)
 
     for index, item in enumerate(slides_data):
         slide = prs.slides.add_slide(blank_layout)
 
-        # 1. Slayd foni va Yuqori rangli chiziq
-        top_bar = slide.shapes.add_shape(
-            1, Inches(0), Inches(0), Inches(13.333), Inches(0.4)
-        )
+        # Yuqori ko'k chiziq
+        top_bar = slide.shapes.add_shape(1, Inches(0), Inches(0), Inches(13.333), Inches(0.4))
         top_bar.fill.solid()
         top_bar.fill.fore_color.rgb = RGBColor(30, 64, 175)
         top_bar.line.fill.background()
 
-        # 2. Sarlavha
+        # Sarlavha
         title_box = slide.shapes.add_textbox(Inches(0.8), Inches(0.8), Inches(11.733), Inches(1.0))
         tf = title_box.text_frame
         tf.word_wrap = True
@@ -118,7 +125,7 @@ def build_powerpoint(data):
         p.font.bold = True
         p.font.color.rgb = RGBColor(15, 23, 42)
 
-        # 3. Matn qismi
+        # Matn bo'limi
         text_box = slide.shapes.add_textbox(Inches(0.8), Inches(2.0), Inches(6.5), Inches(4.8))
         tf_content = text_box.text_frame
         tf_content.word_wrap = True
@@ -126,24 +133,21 @@ def build_powerpoint(data):
         bullet_points = item.get("content", [])
         for i, point in enumerate(bullet_points):
             p_cont = tf_content.add_paragraph() if i > 0 else tf_content.paragraphs[0]
-            p_cont.text = f"•  {point}"
+            p_cont.text = f"• {point}"
             p_cont.font.size = Pt(18)
             p_cont.font.color.rgb = RGBColor(51, 65, 85)
-            p_cont.space_after = Pt(14)
+            p_cont.space_after = Pt(12)
 
-        # 4. Rasm qismi
+        # Rasm qo'shish
         keyword = item.get("image_keyword", "presentation")
-        img_stream = fetch_image(keyword)
-
+        img_stream = await fetch_image(keyword)
         if img_stream:
             try:
-                slide.shapes.add_picture(
-                    img_stream, Inches(7.6), Inches(2.0), width=Inches(4.9), height=Inches(4.5)
-                )
+                slide.shapes.add_picture(img_stream, Inches(7.6), Inches(2.0), width=Inches(4.9), height=Inches(4.5))
             except Exception as e:
-                logger.error(f"Slaydga rasm joylashda xatolik: {e}")
+                logger.error(f"Rasm joylashda xato: {e}")
 
-        # Footer
+        # Footer (Pasti)
         footer_box = slide.shapes.add_textbox(Inches(0.8), Inches(6.9), Inches(11.733), Inches(0.4))
         p_foot = footer_box.text_frame.paragraphs[0]
         p_foot.text = f"{data.get('presentation_title', 'Taqdimot')} | Slayd {index + 1} / {total_slides}"
@@ -156,50 +160,44 @@ def build_powerpoint(data):
     output.seek(0)
     return output
 
-@bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    bot.reply_to(
-        message,
-        "Assalomu alaykum! Men sun'iy intellekt yordamida prezentatsiyalar tayyorlab beruvchi botman.\n\n"
-        "Menga prezentatsiya mavzusini yuboring, men sizga mos tayyor PowerPoint taqdimotini yaratib beraman.\n\n"
-        "Masalan:\n"
-        "👉 *Sun'iy intellektning kelajagi*\n"
-        "👉 *Ekologiya va atrof-muhit muhofazasi*"
-    )
+@dp.message(Command("start", "help"))
+async def start_handler(message: types.Message):
+    await message.answer("Salom! Menga prezentatsiya mavzusini yuboring, men sizga 15 slayddan iborat tayyor PowerPoint (.pptx) fayl tayyorlab beraman.")
 
-@bot.message_handler(func=lambda message: True)
-def generate_presentation_handler(message):
+@dp.message()
+async def generate_handler(message: types.Message):
     topic = message.text.strip()
-    status_msg = bot.reply_to(message, "⏳ **Gemini AI slaydlaringizni tayyorlamoqda...**\n(Bu biroz vaqt olishi mumkin)")
+    status_msg = await message.answer("⏳ Slayd mazmuni va JSON tayyorlanmoqda...")
 
     try:
-        prompt = f"Mavzu: {topic}\nUshbu mavzu bo'yicha prezentatsiya ma'lumotlarini tayyorla."
-        
-        # 404 xatoligi kelib chiqmasligi uchun xavfsiz chaqiruv
-        raw_json_text = generate_ai_content(prompt)
-        data = json.loads(raw_json_text)
-        
-        bot.edit_message_text("🎨 **Slaydlar va rasmlar jamlanmoqda... PowerPoint (.pptx) fayli yaratilmoqda...**", 
-                              chat_id=status_msg.chat.id, message_id=status_msg.message_id)
+        raw_json = await generate_ai_content(topic)
+        data = json.loads(raw_json)
 
-        pptx_file = build_powerpoint(data)
-
-        filename = f"{topic[:20].strip()}_prezentatsiya.pptx"
-        bot.send_document(
-            message.chat.id,
-            document=(filename, pptx_file, "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
-            caption=f"✅ **Prezentatsiyangiz tayyor!**\n📌 Mavzu: *{topic}*"
-        )
-        bot.delete_message(chat_id=status_msg.chat.id, message_id=status_msg.message_id)
-
-    except Exception as e:
-        logger.error(f"Xatolik yuz berdi: {e}")
-        bot.edit_message_text(
-            "❌ Kechirasiz, prezentatsiya yaratishda xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring yoki boshqa mavzu yozing.",
+        await bot.edit_message_text(
+            "🎨 Slaydlar shakllantirilmoqda va rasmlar biriktirilmoqda...",
             chat_id=status_msg.chat.id,
             message_id=status_msg.message_id
         )
 
-if __name__ == "__main__":
+        pptx_stream = await build_powerpoint(data)
+        file_bytes = pptx_stream.getvalue()
+        filename = f"{topic[:20].strip()}_prezentatsiya.pptx"
+
+        input_file = BufferedInputFile(file_bytes, filename=filename)
+
+        await message.answer_document(
+            document=input_file,
+            caption=f"✅ **Prezentatsiyangiz tayyor!**\n📌 Mavzu: *{topic}*"
+        )
+        await bot.delete_message(chat_id=status_msg.chat.id, message_id=status_msg.message_id)
+
+    except Exception as e:
+        logger.error(f"Xatolik: {e}")
+        await message.answer(f"❌ Xatolik yuz berdi: {e}")
+
+async def main():
     logger.info("Bot ishga tushdi...")
-    bot.infinity_polling()
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -1,125 +1,204 @@
-import os
-import json
-import re
 import asyncio
-import requests
-from io import BytesIO
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
+import logging
+import os
+from aiogram import Bot, Dispatcher, F, html
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.filters import CommandStart
+from aiogram.types import BufferedInputFile, Message
+from dotenv import load_dotenv
+from groq import Groq
 from pptx import Presentation
+from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
-from openai import OpenAI
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+load_dotenv()
+
+TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# Groq (Llama 3) mijozi - 404 xatoliklarsiz ishlaydi
-client = OpenAI(
-    base_url="https://api.groq.com/openai/v1",
-    api_key=GROQ_API_KEY,
+bot = Bot(
+    token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
-
-bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+groq_client = Groq(api_key=GROQ_API_KEY)
 
-def create_ppt(data, filename="Taqdimot.pptx"):
-    prs = Presentation()
 
-    # 1-Slayd: Bosh sarlavha
-    slide1 = prs.slides.add_slide(prs.slide_layouts[0])
-    slide1.shapes.title.text = data.get("title", "Taqdimot")
-    slide1.placeholders[1].text = "Sun'iy intellekt tomonidan tayyorlandi"
+def generate_presentation_content(topic: str) -> str:
+  prompt = f"""
+    Siz professional taqdimot (slayd) dizayneri va mutaxassisisiz. 
+    Quyidagi mavzu bo'yicha ANIQ 15 ta slayd uchun mukammal tuzilma tayyorlab bering.
+    Har bir slayd uchun quyidagi formatdan aniq foydalaning:
+    
+    SLAYD N
+    Sarlavha: [Slayd sarlavhasi]
+    Matn:
+    - 1-reja (asosiy fikr yoki qadam)
+    - 2-reja (tavsif yoki tahlil)
+    - 3-reja (xulosa yoki qo'shimcha ma'lumot)
 
-    # 2-Slayd: Reja
-    slide2 = prs.slides.add_slide(prs.slide_layouts[1])
-    slide2.shapes.title.text = "Taqdimot Rejasi"
-    reja_items = data.get("reja", [])
-    reja_text = "\n".join([f"{i+1}. {item}" for i, item in enumerate(reja_items)])
-    slide2.placeholders[1].text = reja_text
-
-    # 3-dan 15-gacha Slaydlar (13 ta asosiy slayd)
-    slides_data = data.get("slides", [])
-    for index, item in enumerate(slides_data[:13]):
-        slide = prs.slides.add_slide(prs.slide_layouts[5])
-        slide.shapes.title.text = f"{index + 1}. {item.get('title', '')}"
-
-        # Matn qismi
-        txBox = slide.shapes.add_textbox(Inches(0.6), Inches(1.8), Inches(4.5), Inches(4.8))
-        tf = txBox.text_frame
-        tf.word_wrap = True
-        p = tf.paragraphs[0]
-        p.text = item.get("content", "")
-        p.font.size = Pt(16)
-
-        # Rasm qismi
-        keyword = item.get("image_keyword", "technology")
-        img_url = f"https://image.pollinations.ai/prompt/{keyword}?width=600&height=500&nologo=true"
-        
-        try:
-            res = requests.get(img_url, timeout=12)
-            if res.status_code == 200:
-                img_stream = BytesIO(res.content)
-                slide.shapes.add_picture(img_stream, Inches(5.3), Inches(1.8), width=Inches(4.2))
-        except Exception as img_err:
-            print(f"Rasm yuklashda xato: {img_err}")
-
-    prs.save(filename)
-    return filename
-
-@dp.message(Command("start"))
-async def start_handler(message: types.Message):
-    await message.answer("Assalomu alaykum! Mavzu yuboring. Men sizga 15 ta slayddan iborat, reja va rasmli taqdimot tayyorlab beraman.")
-
-@dp.message()
-async def generate_presentation_handler(message: types.Message):
-    topic = message.text
-    wait_msg = await message.answer(f"⏳ '{topic}' mavzusida 15 ta slayd tayyorlanmoqda...")
-
-    prompt = f"""
-    Menga '{topic}' mavzusida taqdimot uchun ma'lumotlarni faqat JSON formatida qaytar.
-    Qoidalar:
-    1. "title": Taqdimotning umumiy nomi (o'zbek tilida).
-    2. "reja": Taqdimotning 5-6 ta banddan iborat rejasi (massiv ko'rinishida).
-    3. "slides": Aniq 13 ta obyekt elementidan iborat massiv.
-       Har bir slayd obyektida:
-       - "title": Slayd sarlavhasi
-       - "content": Slaydning asosiy mazmuni (3-5 ta batafsil gap)
-       - "image_keyword": Slayd mazmuniga mos inglizcha 2-3 so'zdan iborat rasm kalit so'zi.
-       
-    Faqat JSON qaytar, boshqa hech qanday izoh yozma.
+    Mavzu: {topic}
     """
 
-    try:
-        # Groq orqali Llama 3 modelidan foydalanish (404 xatolik chiqmaydi)
-        completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}
-        )
-        
-        raw_response = completion.choices[0].message.content
-        data = json.loads(raw_response)
+  chat_completion = groq_client.chat.completions.create(
+      messages=[{
+          "role": "user",
+          "content": prompt,
+      }],
+      model="llama-3.3-70b-versatile",
+      temperature=0.7,
+  )
+  return chat_completion.choices[0].message.content
 
-        safe_topic = re.sub(r'[^\w\s-]', '', topic)[:15].strip()
-        filename = f"{safe_topic}_taqdimot.pptx"
-        create_ppt(data, filename)
 
-        ppt_file = types.FSInputFile(filename)
-        await message.answer_document(document=ppt_file, caption=f"✅ '{topic}' mavzusidagi 15 ta slayddan iborat taqdimot tayyor!")
-        
-        if os.path.exists(filename):
-            os.remove(filename)
+def create_pptx_file(content: str, filename: str = "presentation.pptx"):
+  prs = Presentation()
+  # Slayd o'lchamini kengaytirish (16:9 format zamonaviyroq ko'rinadi)
+  prs.slide_width = Inches(13.333)
+  prs.slide_height = Inches(7.5)
 
-    except Exception as e:
-        await message.answer(f"❌ Xatolik yuz berdi: {str(e)}\nIltimos, qayta urinib ko'ring.")
-    finally:
-        try:
-            await wait_msg.delete()
-        except:
-            pass
+  slides_data = content.split("SLAYD")
+
+  for block in slides_data:
+    if not block.strip():
+      continue
+
+    lines = [line.strip() for line in block.split("\n") if line.strip()]
+    title = "Slayd"
+    bullet_points = []
+
+    for line in lines:
+      if line.lower().startswith("sarlavha:"):
+        title = line.split(":", 1)[1].strip()
+      elif line.startswith("-") or line.startswith("*"):
+        bullet_points.append(line.lstrip("-* ").strip())
+
+    # Bo'sh slayd qo'shish (Blank layout)
+    slide_layout = prs.slide_layouts[6]
+    slide = prs.slides.add_slide(slide_layout)
+
+    # 1. Orqa fon rangini och tusda qilish
+    background = slide.background
+    fill = background.fill
+    fill.solid()
+    fill.fore_color.rgb = RGBColor(245, 247, 250)  # Och kulrang-moviy fon
+
+    # 2. Yuqori qismga chiroyli dizayn paneli (Banner) qo'shish
+    header_box = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE, Inches(0.8), Inches(0.8), Inches(11.733), Inches(1.1)
+    )
+    header_box.fill.solid()
+    header_box.fill.fore_color.rgb = RGBColor(26, 54, 93)  # To'q ko'k rang
+    header_box.line.color.rgb = RGBColor(26, 54, 93)
+
+    # 3. Sarlavha matnini qo'shish
+    title_box = slide.shapes.add_textbox(
+        Inches(1.0), Inches(0.95), Inches(11.333), Inches(0.8)
+    )
+    tf_title = title_box.text_frame
+    tf_title.word_wrap = True
+    p_title = tf_title.paragraphs[0]
+    p_title.text = title
+    p_title.font.size = Pt(28)
+    p_title.font.bold = True
+    p_title.font.color.rgb = RGBColor(255, 255, 255)  # Oq rangli sarlavha
+
+    # 4. Matnlar (Rejalar) uchun asosiy quti
+    content_box = slide.shapes.add_textbox(
+        Inches(1.0), Inches(2.3), Inches(11.333), Inches(4.5)
+    )
+    tf_content = content_box.text_frame
+    tf_content.word_wrap = True
+
+    # Rejalarni joylashtirish (kamida 3 ta reja bo'lishi ta'minlanadi)
+    if not bullet_points:
+      bullet_points = [
+          "Mavzu bo'yicha asosiy tushunchalar",
+          "Asosiy jarayonlar va tahlillar",
+          "Amaliy ahamiyati va xulosalar",
+      ]
+
+    for i, point in enumerate(bullet_points):
+      if i == 0:
+        p = tf_content.paragraphs[0]
+      else:
+        p = tf_content.add_paragraph()
+
+      p.text = f"🔹  {point}"
+      p.level = 0
+      p.font.size = Pt(20)
+      p.font.color.rgb = RGBColor(45, 55, 72)  # To'q kulrang matn
+      p.space_after = Pt(14)  # Qatorlar orasidagi masofa
+
+  prs.save(filename)
+  return filename
+
+
+@dp.message(CommandStart())
+async def command_start_handler(message: Message):
+  await message.answer(
+      f"Salom, {html.bold(message.from_user.full_name)}! 🚀\nMen"
+      " tayyorman. Menga istalgan mavzuni yuboring, men Groq intellekti"
+      " yordamida **15 ta slayddan iborat, chiroyli dizaynli** taqdimot"
+      " tayyorlab beraman."
+  )
+
+
+@dp.message(F.text)
+async def handle_topic(message: Message):
+  topic = message.text
+  processing_msg = await message.answer(
+      "✨ Groq intellekti 15 ta slayd mazmunini va dizaynini"
+      " shakllantirmoqda, iltimos biroz kuting..."
+  )
+
+  try:
+    # Groq orqali matn generatsiya qilish
+    ai_content = await asyncio.to_thread(
+        generate_presentation_content, topic
+    )
+
+    # PPTX fayl yaratish
+    file_path = f"presentation_{message.from_user.id}.pptx"
+    await asyncio.to_thread(create_pptx_file, ai_content, file_path)
+
+    # Faylni yuborish
+    with open(file_path, "rb") as f:
+      file_bytes = f.read()
+
+    document = BufferedInputFile(
+        file_bytes, filename=f"{topic[:20]}_taqdimot.pptx"
+    )
+    await message.answer_document(
+        document=document,
+        caption=(
+            f"<b>{html.escape(topic)}</b> mavzusida 15 ta slayddan iborat tayyor"
+            " taqdimot! 🎯"
+        ),
+    )
+
+    # Vaqtinchalik faylni o'chirish
+    if os.path.exists(file_path):
+      os.remove(file_path)
+
+    await bot.delete_message(
+        chat_id=message.chat.id, message_id=processing_msg.message_id
+    )
+
+  except Exception as e:
+    logging.error(f"Xatolik: {e}")
+    await message.answer(
+        "Kechirasiz, taqdimotni yaratishda xatolik yuz berdi. Iltimos, boshqa"
+        " mavzu yuboring yoki qaytadan urinib ko'ring."
+    )
+
 
 async def main():
-    await dp.start_polling(bot)
+  logging.basicConfig(level=logging.INFO)
+  await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+  asyncio.run(main())

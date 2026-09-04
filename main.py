@@ -16,8 +16,8 @@ from pptx.util import Inches, Pt
 
 load_dotenv()
 
-TOKEN = os.getenv("Sizning_BotFather_dan_olgan_tokeningiz")
-GROQ_API_KEY = os.getenv("Sizning_Groq_api_kalitingiz")
+TOKEN = "AQ.Ab8RN6Iu6riqs8tEMVX_qo83q8CcYRaNLrCNliWfF9tz4fD3mg"
+GROQ_API_KEY = "gsk_... (Groq saytidan olgan kalitingizni yozing)"
 
 bot = Bot(
     token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML)

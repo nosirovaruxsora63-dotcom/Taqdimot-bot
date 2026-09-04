@@ -16,7 +16,7 @@ from pptx.util import Inches, Pt
 
 load_dotenv()
 
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("AQ.Ab8RN6Iu6riqs8tEMVX_qo83q8CcYRaNLrCNliWfF9tz4fD3mg")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 bot = Bot(
